@@ -21,6 +21,15 @@ API_KEY="${BUGZILLA_API_KEY:-}"
 HOST="${MCP_HOST:-127.0.0.1}"
 PORT="${MCP_PORT:-8000}"
 
+if [[ -f ".env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ".env"
+  set +a
+  BUGZILLA_URL="${BUGZILLA_URL:-${BUGZILLA_SERVER:-}}"
+  API_KEY="${API_KEY:-${BUGZILLA_API_KEY:-}}"
+fi
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --bugzilla-url)
