@@ -1,0 +1,280 @@
+"""
+MCP server for Bugzilla that provides tools and prompts
+to assist LLM clients with useful bug context.
+
+License: Apache 2.0
+"""
+
+import importlib.metadata
+from typing import Any, List
+
+import httpx
+from fastmcp import FastMCP
+from fastmcp.exceptions import PromptError, ToolError, ValidationError
+from fastmcp.server.dependencies import get_http_headers
+from fastmcp.server.middleware import Middleware, MiddlewareContext
+from typing import Optional
+
+from .mcp_utils import Bugzilla, bugzilla_client, mcp_log
+
+# The FastMCP instance
+mcp = FastMCP("Bugzilla")
+
+# Global dict to hold command-line arguments, populated by main() in __init__.py
+cli_args: dict[str, Any] = {}
+
+# Global variable to hold the base_url, set by the start() function
+base_url: str = ""
+
+
+# check for the required headers which contain the api_key header
+# required by all the tools & prompts to make the api calls
+class ValidateHeaders(Middleware):
+    """Validate incoming HTTP headers"""
+
+    async def on_message(self, context: MiddlewareContext, call_next):
+        mcp_log.debug("api_key: Checking")
+
+        api_key_header = cli_args.get("api_key_header", "ApiKey")
+        headers = get_http_headers() or {}
+        api_key_value = headers.get(api_key_header.lower()) or headers.get(api_key_header)
+        if not api_key_value:
+            api_key_value = cli_args.get("api_key")
+
+        if api_key_value:
+            # Create a new Bugzilla client for this request context
+            bz = Bugzilla(url=base_url, api_key=api_key_value)
+            token = bugzilla_client.set(bz)
+            mcp_log.debug("api_key: Found")
+
+            try:
+                return await call_next(context)
+            finally:
+                # Cleanup: close the client and reset the context var
+                await bz.close()
+                bugzilla_client.reset(token)
+        else:
+            raise ValidationError(
+                f"`{api_key_header}` header is required, or provide --api-key / BUGZILLA_API_KEY"
+            )
+
+
+mcp.add_middleware(ValidateHeaders())
+
+
+def get_bz() -> Bugzilla:
+    """Helper to get the current Bugzilla client from context"""
+    bz = bugzilla_client.get()
+    if not bz:
+        raise ToolError("Bugzilla client not initialized in context")
+    return bz
+
+
+@mcp.tool()
+async def bug_info(id: int) -> dict[str, Any]:
+    """Returns the entire information about a given bugzilla bug id"""
+
+    mcp_log.info(f"[LLM-REQ] bug_info(id={id})")
+
+    try:
+        bz = get_bz()
+        result = await bz.bug_info(id)
+        return result
+
+    except Exception as e:
+        raise ToolError(f"Failed to fetch bug info\nReason: {e}")
+
+
+@mcp.tool()
+async def bug_comments(
+    id: int, include_private_comments: bool = False
+) -> List[dict[str, Any]]:
+    """Returns the comments of given bug id
+    Private comments are not included by default
+    but can be explicitely requested
+    """
+
+    mcp_log.info(
+        f"[LLM-REQ] bug_comments(id={id}, include_private_comments={include_private_comments})"
+    )
+
+    try:
+        bz = get_bz()
+        all_comments = await bz.bug_comments(id)
+
+        if include_private_comments:
+            mcp_log.info(
+                f"[LLM-RES] Returning {len(all_comments)} comments (including private)"
+            )
+            return all_comments
+
+        public_comments = [c for c in all_comments if not c.get("is_private", False)]
+        mcp_log.info(f"[LLM-RES] Returning {len(public_comments)} public comments")
+        return public_comments
+
+    except Exception as e:
+        raise ToolError(f"Failed to fetch bug comments\nReason: {e}")
+
+
+@mcp.tool()
+async def bugs_quicksearch(
+    query: str,
+    status: Optional[str] = "ALL",
+    include_fields: Optional[
+        str
+    ] = "id,product,component,assigned_to,status,resolution,summary,last_change_time",
+    limit: Optional[int] = 50,
+    offset: Optional[int] = 0,
+) -> List[Any]:
+    """Search bugs using bugzilla's quicksearch syntax
+
+    To reduce the token limit & response time, only returns a subset of fields for each bug
+    The user can query full details of each bug using the bug_info tool
+    """
+
+    mcp_log.info(
+        f"[LLM-REQ] bugs_quicksearch(query='{query}',status='{status}', include_fields='{include_fields}', limit={limit}, offset={offset})"
+    )
+
+    try:
+        bz = get_bz()
+        # We moved quicksearch logic to mcp_utils
+        bugs = await bz.quicksearch(query, status, include_fields, limit, offset)
+
+        mcp_log.info(f"[LLM-RES] Found {len(bugs)} bugs")
+        return bugs
+
+    except Exception as e:
+        raise ToolError(f"Search failed: {e}")
+
+
+@mcp.tool()
+async def learn_quicksearch_syntax() -> str:
+    """Access the documentation of the bugzilla quicksearch syntax.
+    LLM can learn using this tool. Response is in HTML"""
+
+    mcp_log.info("[LLM-REQ] learn_quicksearch_syntax()")
+
+    try:
+        bz = get_bz()
+        # We can use the client to fetch this page too, though it's not a rest API
+        # Using the underlying client for convenience
+        url = f"{bz.base_url}/page.cgi"
+        r = await bz.client.get(
+            url, params={"id": "quicksearch.html"}
+        )  # Use absolute URL since base_url of client is /rest
+
+        # Wait, bz.client.base_url is .../rest.
+        # So we should use a new request or adjust.
+        # Actually easier to just use a new async request or reuse the client without prefix if possible.
+        # httpx client handles absolute URLs by ignoring base_url.
+
+        if r.status_code != 200:
+            raise PromptError(
+                f"Failed to fetch bugzilla quicksearch_syntax with status code {r.status_code}"
+            )
+
+        mcp_log.info(f"[LLM-RES] Fetched {len(r.text)} chars of documentation")
+        return r.text
+    except Exception as e:
+        raise PromptError(f"Failed to fetch quicksearch documentation: {e}")
+
+
+@mcp.tool()
+def server_url() -> str:
+    """bugzilla server's base url"""
+    mcp_log.info("[LLM-REQ] server_url()")
+    # server_url is static per instance, doesn't need BZ client really,
+    # but base_url global is fine as it's set at startup.
+    return base_url
+
+
+@mcp.tool()
+def bug_url(bug_id: int) -> str:
+    """returns the bug url"""
+    mcp_log.info(f"[LLM-REQ] bug_url(bug_id={bug_id})")
+    # This just constructs a URL string, so sync is fine.
+    return f"{base_url}/show_bug.cgi?id={bug_id}"
+
+
+@mcp.tool()
+def mcp_server_info() -> dict[str, Any]:
+    """Returns the args being used by the current server instance"""
+    mcp_log.info("[LLM-REQ] mcp_server_info()")
+    info = cli_args.copy()
+    if "api_key" in info:
+        info["api_key"] = "***masked***" if info["api_key"] else None
+    info["version"] = importlib.metadata.version("bugzilla-readonly-mcp")
+    return info
+
+
+@mcp.tool()
+def get_current_headers() -> dict[str, Any]:
+    """Returns the headers being provided by the current http request"""
+    mcp_log.info("[LLM-REQ] get_current_headers()")
+    headers = dict(get_http_headers() or {})
+    api_key_header = cli_args.get("api_key_header", "ApiKey")
+    header_keys = {api_key_header, api_key_header.lower()}
+
+    def _mask_secret(value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        if len(value) <= 6:
+            return "*" * len(value)
+        return f"{value[:4]}...{value[-2:]}"
+
+    for key in header_keys:
+        if key in headers:
+            headers[key] = _mask_secret(headers[key])
+
+    configured_api_key = cli_args.get("api_key")
+    if configured_api_key and not any(key in headers for key in header_keys):
+        headers[api_key_header] = _mask_secret(configured_api_key)
+
+    return headers
+
+
+@mcp.prompt()
+async def summarize_bug_comments(id: int) -> str:
+    """Summarizes all the comments of a bug"""
+
+    mcp_log.info(f"[LLM-REQ] summarize_bug_comments(id={id})")
+
+    try:
+        bz = get_bz()
+        comments = await bz.bug_comments(id)
+
+        summary_prompt = f"""
+    You are an expert in summarizing bugzilla comments.
+    Rules to follow:
+    - Summary must be well structured & eye catching
+    - Mention usernames & dates wherever relevant.
+    - date field must be in human readable format
+    - Usernames must be bold italic (***username***) dates must be bold (**date**)
+    
+    Comments Data:
+    {comments}
+    """.strip()
+
+        mcp_log.info(f"[LLM-RES] Generated prompt of length {len(summary_prompt)}")
+        return summary_prompt
+
+    except Exception as e:
+        raise PromptError(f"Summarize Comments Failed\nReason: {e}")
+
+
+def start():
+    """
+    Starts the FastMCP server for Bugzilla.
+    """
+    global base_url
+    base_url = cli_args["bugzilla_server"]
+    # Ensure base_url doesn't have trailing slash for consistency
+    if base_url.endswith("/"):
+        base_url = base_url[:-1]
+
+    transport = cli_args.get("transport", "http")
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+    else:
+        mcp.run(transport="http", host=cli_args["host"], port=cli_args["port"])

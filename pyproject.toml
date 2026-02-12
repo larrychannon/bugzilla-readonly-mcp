@@ -1,0 +1,32 @@
+[project]
+name = "bugzilla-readonly-mcp"
+version = "0.9.0"
+description = "Bugzilla read-only MCP server"
+readme = "README.md"
+requires-python = "==3.13.*"
+
+dependencies = [
+    "fastmcp>=2.14.0",
+    "httpx-retries>=0.4.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "uv",
+    "pytest",
+    "pytest-asyncio",
+    "respx",
+]
+
+[project.scripts]
+bugzilla-readonly-mcp = "mcp_bugzilla:main"
+
+[tool.setuptools]
+py-modules = ["mcp_utils", "server"]
+
+[build-system]
+requires = ["uv_build>=0.9.11,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "mcp_bugzilla"
