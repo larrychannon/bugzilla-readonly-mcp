@@ -83,6 +83,7 @@ sleep 2
 echo "==> MCP smoke test: server_url"
 SERVER_URL_RESPONSE="$(curl -fsS -X POST "http://${HOST}:${PORT}/mcp" \
   -H "ApiKey: ${API_KEY}" \
+  -H "Accept: application/json, text/event-stream" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"server_url","arguments":{}},"id":1}')"
 echo "$SERVER_URL_RESPONSE"
@@ -90,6 +91,7 @@ echo "$SERVER_URL_RESPONSE"
 echo "==> MCP smoke test: bug_info(id=1)"
 BUG_INFO_RESPONSE="$(curl -fsS -X POST "http://${HOST}:${PORT}/mcp" \
   -H "ApiKey: ${API_KEY}" \
+  -H "Accept: application/json, text/event-stream" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"bug_info","arguments":{"id":1}},"id":2}')"
 echo "$BUG_INFO_RESPONSE"
