@@ -87,7 +87,7 @@ If you want this server to start automatically when Codex launches, run it in `s
 ```toml
 [mcp_servers.bugzilla_readonly]
 command = "bash"
-args = ["-lc", "cd '/Users/clchan/Documents/Coding/Bugzilla MCP for Release Notes/mcp-bugzilla' && PYTHONPATH=src uv run bugzilla-readonly-mcp --transport stdio --bugzilla-server https://bugzilla.example.com --api-key \"$BUGZILLA_API_KEY\""]
+args = ["-lc", "cd '/Users/clchan/Documents/Coding/Bugzilla MCP for Release Notes/bugzilla-readonly-mcp' && PYTHONPATH=src uv run bugzilla-readonly-mcp --transport stdio --bugzilla-server https://bugzilla.example.com --api-key \"$BUGZILLA_API_KEY\""]
 env = { BUGZILLA_API_KEY = "YOUR_API_KEY" }
 ```
 
