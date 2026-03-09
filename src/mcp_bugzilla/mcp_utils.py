@@ -134,9 +134,13 @@ class Bugzilla:
     ) -> list[dict[str, Any]]:
         """Perform a quicksearch"""
         # Quicksearch isn't a direct REST endpoint usually, but /bug with quicksearch param works
+        normalized_status = (status or "").strip().upper()
+        quicksearch_query = query.strip()
+        if normalized_status and normalized_status != "ALL":
+            quicksearch_query = f"{normalized_status} {quicksearch_query}"
 
         params = {
-            "quicksearch": status + " " + query,
+            "quicksearch": quicksearch_query,
             "include_fields": include_fields,
             "limit": limit,
             "offset": offset,
